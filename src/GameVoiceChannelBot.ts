@@ -116,7 +116,6 @@ export default class GameVoiceChannelBot implements DiscordBot {
     const playedGames: string[] = flatten(
       members.map((member) => member.presence?.activities)
     )
-      .filter((activity) => activity?.flags.has("Play"))
       .map((activity) => activity?.name)
       .filter((name) => !!name) as string[];
 
