@@ -47,6 +47,12 @@ export default class BotManager {
     if (!this.client) return;
 
     this.guilds.forEach((guild) => {
+      // In DEV mode, only start worker for maxoux server
+      if (
+        process.env.NODE_ENV === "development" &&
+        guild.name !== "Serveur de maxoux"
+      )
+        return;
       this.bots.forEach((bot) => {
         // Check for every guild and bot if worker exist
         if (

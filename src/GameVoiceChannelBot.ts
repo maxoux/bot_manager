@@ -1,45 +1,85 @@
 import {
-  ActivityFlags,
+  BaseGuildTextChannel,
   ChannelType,
   ClientEvents,
   Events,
   Guild,
   GuildChannel,
-  GuildChannelCreateOptions,
   GuildMember,
 } from "discord.js";
-import { difference, differenceWith, flatten, values } from "lodash";
+import { difference, differenceWith, flatten, values, without } from "lodash";
 import { DiscordBot, TBotEventListener, TBotGenerator } from "./types";
+import ChannelBotModule from "./modules/ChannelBotModule";
 
-export default class GameVoiceChannelBot implements DiscordBot {
+export default class GameVoiceChannelBot
+  extends ChannelBotModule
+  implements DiscordBot
+{
   public readonly masterChannelName = "Jeux";
+  public readonly textChannelName = "Activité";
   public static readonly BOT_TYPE_ID = "GAME_VOICE_CREATOR";
   private masterChannel!: GuildChannel;
-  private managedChannels: GuildChannel[] = [];
+  private textChannel!: GuildChannel;
+  private gamesAnnounced: string[] = [];
   private members: Record<string, GuildMember> = {};
 
   static Module(): [string, TBotGenerator<GameVoiceChannelBot>] {
     return [this.BOT_TYPE_ID, this];
   }
 
-  constructor(private readonly server: Guild, public readonly guildId: string) {
+  constructor(
+    protected readonly server: Guild,
+    protected readonly guildId: string
+  ) {
+    super(server, guildId);
     this.init();
   }
 
   private async init() {
     try {
-      const channels = await this.server.channels.fetch();
+      const _channels = [...(await this.server.channels.fetch())];
+      const channels = _channels.map((a) => a[1]);
 
-      const existingChannel = channels.find(
+      const existingMasterChannel = channels.find(
         (channel) => channel?.name === this.masterChannelName
       );
 
+      const existingTextChannel = channels.find(
+        (channel) => channel?.name === this.textChannelName
+      );
+
       this.masterChannel =
-        existingChannel ||
+        existingMasterChannel ||
         (await this.server.channels.create({
           type: ChannelType.GuildCategory,
           name: this.masterChannelName,
         }));
+
+      this.textChannel =
+        existingTextChannel ||
+        (await this.createChannel({
+          type: ChannelType.GuildText,
+          name: this.textChannelName,
+          parent: this.masterChannel.id,
+        }));
+
+      const promises = channels.map(async (channel) => {
+        if (channel?.parent !== this.masterChannel) return;
+
+        const channelNameAlreadyExist = this.managedChannels.find(
+          (managedChannel) => managedChannel.name === channel.name
+        );
+
+        if (channelNameAlreadyExist) {
+          console.log("Duplicate channel: %s", channel.name);
+          await channel.delete("Duplicate channel");
+        } else {
+          console.log("Owning channel %s", channel.name);
+          this.managedChannels.push(channel);
+        }
+      });
+
+      await Promise.all(promises);
 
       // Delete handling channels
     } catch (e) {
@@ -48,36 +88,6 @@ export default class GameVoiceChannelBot implements DiscordBot {
         e
       );
     }
-  }
-
-  async createChannel(
-    options: GuildChannelCreateOptions & {
-      type: ChannelType;
-    }
-  ) {
-    console.log("creating channel %s", options.name);
-    const channel = await this.server.channels.create({
-      ...options,
-      parent: this.masterChannel.id,
-    });
-
-    if (!channel)
-      console.error(`Unable to create managed channel ${options.name} !`);
-
-    this.managedChannels.push(channel);
-  }
-
-  async deleteChannel(id: GuildChannel["id"]) {
-    const channelIndex = this.managedChannels.findIndex(
-      (channel) => channel.id === id
-    );
-    const channel = this.managedChannels[channelIndex];
-
-    if (channelIndex === -1) return;
-    console.log("Deleting channel %s", channel.name);
-
-    await this.managedChannels[channelIndex].delete();
-    this.managedChannels = this.managedChannels.filter((c) => c.id !== id);
   }
 
   updateChannelListByName(channelNames: string[]) {
@@ -89,11 +99,17 @@ export default class GameVoiceChannelBot implements DiscordBot {
     const channelToRemove = differenceWith(
       this.managedChannels,
       channelNames,
-      (managerChannel, channelName) => managerChannel.name === channelName
+      (managerChannel, channelName) =>
+        managerChannel.name === channelName &&
+        channelName !== this.textChannelName
     );
 
     const createPromise = channelToAdd.map((channel) =>
-      this.createChannel({ name: channel, type: ChannelType.GuildVoice })
+      this.createChannel({
+        name: channel,
+        type: ChannelType.GuildVoice,
+        parent: this.masterChannel.id,
+      })
     );
     const deletePromise = channelToRemove.map((channel) =>
       this.deleteChannel(channel.id)
@@ -113,14 +129,33 @@ export default class GameVoiceChannelBot implements DiscordBot {
     const members = values(this.members);
     console.log("Presence update, have %d members", members.length);
 
-    const playedGames: string[] = flatten(
+    const _playedGames: string[] = flatten(
       members.map((member) => member.presence?.activities)
     )
       .map((activity) => activity?.name)
       .filter((name) => !!name) as string[];
+    const playedGames: string[] = [...new Set(_playedGames)];
 
     console.log("Played games : ", playedGames);
-    await this.updateChannelListByName([...new Set(playedGames)]);
+    await this.updateChannelListByName(playedGames);
+    await this.announce(playedGames);
+  }
+
+  async announce(gamesPlayed: string[]) {
+    for (let game in gamesPlayed) {
+      const players = Object.values(this.members).filter(
+        (member) => member.presence?.activities[0]?.name === game
+      );
+      if (players.length > 0)
+        console.log("%d players is on %s", players.length, game);
+      if (this.gamesAnnounced.includes(game) && players.length >= 2) {
+        (this.textChannel as BaseGuildTextChannel).send(`Ca game à ${game} !`);
+        this.gamesAnnounced.push(game);
+        setTimeout(() => {
+          this.gamesAnnounced = without<string>(this.gamesAnnounced, game);
+        }, 30 * 60 * 1000);
+      }
+    }
   }
 
   async install() {

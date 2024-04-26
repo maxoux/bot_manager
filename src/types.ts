@@ -8,8 +8,6 @@ export type TBotEventListener = [
 ];
 
 export interface DiscordBot {
-  guildId: string;
-
   getEventListener: () => Array<TBotEventListener>;
   install: () => Promise<void>;
   uninstall: () => Promise<void>;
