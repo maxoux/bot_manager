@@ -11,6 +11,8 @@ import { difference, differenceWith, flatten, values, without } from "lodash";
 import { DiscordBot, TBotEventListener, TBotGenerator } from "./types";
 import ChannelBotModule from "./modules/ChannelBotModule";
 
+const bannedVoiceChannelNames = ["Custom Status"];
+
 export default class GameVoiceChannelBot
   extends ChannelBotModule
   implements DiscordBot
@@ -40,12 +42,18 @@ export default class GameVoiceChannelBot
       const _channels = [...(await this.server.channels.fetch())];
       const channels = _channels.map((a) => a[1]);
 
+      console.log(
+        "list",
+        channels.map((c) => c?.name)
+      );
+
       const existingMasterChannel = channels.find(
         (channel) => channel?.name === this.masterChannelName
       );
 
       const existingTextChannel = channels.find(
-        (channel) => channel?.name === this.textChannelName
+        (channel) =>
+          channel?.name.toLowerCase() === this.textChannelName.toLowerCase()
       );
 
       this.masterChannel =
@@ -63,21 +71,29 @@ export default class GameVoiceChannelBot
           parent: this.masterChannel.id,
         }));
 
-      const promises = channels.map(async (channel) => {
-        if (channel?.parent !== this.masterChannel) return;
+      console.log(
+        `${existingTextChannel ? "Owning" : "Created"} Text channel %s`,
+        this.textChannelName
+      );
 
-        const channelNameAlreadyExist = this.managedChannels.find(
-          (managedChannel) => managedChannel.name === channel.name
-        );
+      // Owning voice channels
+      const promises = channels
+        .filter((c) => c?.type === ChannelType.GuildVoice)
+        .map(async (channel) => {
+          if (channel?.parent !== this.masterChannel) return;
 
-        if (channelNameAlreadyExist) {
-          console.log("Duplicate channel: %s", channel.name);
-          await channel.delete("Duplicate channel");
-        } else {
-          console.log("Owning channel %s", channel.name);
-          this.managedChannels.push(channel);
-        }
-      });
+          const channelNameAlreadyExist = this.managedChannels.find(
+            (managedChannel) => managedChannel.name === channel.name
+          );
+
+          if (channelNameAlreadyExist) {
+            console.log("Duplicate channel: %s", channel.name);
+            await channel.delete("Duplicate channel");
+          } else {
+            console.log("Owning channel %s", channel.name);
+            this.managedChannels.push(channel);
+          }
+        });
 
       await Promise.all(promises);
 
@@ -99,9 +115,7 @@ export default class GameVoiceChannelBot
     const channelToRemove = differenceWith(
       this.managedChannels,
       channelNames,
-      (managerChannel, channelName) =>
-        managerChannel.name === channelName &&
-        channelName !== this.textChannelName
+      (managerChannel, channelName) => managerChannel.name === channelName
     );
 
     const createPromise = channelToAdd.map((channel) =>
@@ -133,7 +147,9 @@ export default class GameVoiceChannelBot
       members.map((member) => member.presence?.activities)
     )
       .map((activity) => activity?.name)
-      .filter((name) => !!name) as string[];
+      .filter(
+        (name) => name && !bannedVoiceChannelNames.includes(name)
+      ) as string[];
     const playedGames: string[] = [...new Set(_playedGames)];
 
     console.log("Played games : ", playedGames);
@@ -142,12 +158,11 @@ export default class GameVoiceChannelBot
   }
 
   async announce(gamesPlayed: string[]) {
-    for (let game in gamesPlayed) {
+    gamesPlayed.forEach((game) => {
       const players = Object.values(this.members).filter(
         (member) => member.presence?.activities[0]?.name === game
       );
-      if (players.length > 0)
-        console.log("%d players is on %s", players.length, game);
+      console.log("%d players is on %s", players.length, game);
       if (this.gamesAnnounced.includes(game) && players.length >= 2) {
         (this.textChannel as BaseGuildTextChannel).send(`Ca game à ${game} !`);
         this.gamesAnnounced.push(game);
@@ -155,7 +170,7 @@ export default class GameVoiceChannelBot
           this.gamesAnnounced = without<string>(this.gamesAnnounced, game);
         }, 30 * 60 * 1000);
       }
-    }
+    });
   }
 
   async install() {
